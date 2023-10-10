@@ -1,7 +1,14 @@
 extensions [matrix nw]
 
+breed [women woman]
+breed [men man]
+
 globals[
   num-links
+  random-network-prob
+  watts-strogatz-neighbors
+  watts-strogatz-rewiring
+  preferential-attachment-min-degree
   unemployed-f     ;percent of women who are unemployed
   unemployed-m     ;percent of men who are unemployed
   mean-work-f      ;mean time per day in paid work: female agents
@@ -12,65 +19,93 @@ globals[
   history-length-work    ; number of historic work values
   history-length-care    ; number of historic care values
   th-work-change         ; threshold for when the difference between gender identity and work division is to high
+  jobs
 ]
 
 
 
 turtles-own[
-  systemic?            ;woman in this household works in systemic branch, man in short-time or unemployed
-  rev-systemic?        ;man in this household works in systemic occupation, woman is at home
+  spouse               ; turtles spouse
   gender-identity      ; ;describes in the opinion of this household the optimal division of care work   (0...man should do everything, 1..woman should do everything)
   fix?                 ;some do not change their gender identity
-  care-f-m             ;a tuple that stores the hours spend for care work for f and m
-  work-f-m             ;a tuple that stores the hours spend for paid work for f and m
-  unemployed-f-m?      ;a tuple that stores wheter the woman or the man of this houshold is unemployed
-  lockdown-work-f-m    ;a tuple that stores the hours for paid work for f and m
+  care            ;a tuple that stores the hours spend for care work for f and m
+  work            ;a tuple that stores the hours spend for paid work for f and m
+  unemployed?      ;a tuple that stores wheter the woman or the man of this houshold is unemployed
+  lockdown-work    ;a tuple that stores the hours for paid work for f and m
   care-history         ;save care-division
   identity-history     ;matrix with historical identity values in two columns: f and m
   work-history         ;matrix with historical identity values in two columns: f and m
   work-div             ;share of  paid work hours done by woman                                      (1...man single earner, 0 ... woman single earner)
   household-care        ;overall care work workload in this houshold
   lockdown-household-care
-  potential-care-f-m       ;tuple that stores the hours left potentially for care work: hours - work-f-m
-  friends
+  hh-income            ;; household-income
   eps
   n                   ;social norm of social group (friends)
   lockdown-hours      ;sum of hours care work and paid work during lockdown (increases hours by random value)
-  ;hours               ;sum of hours care work and paid work during normal times (random value from normal distr. for each household)
-  paygap              ;how much in relation to the man does the woman of this household earn
+  ;paygap              ;how much in relation to the man does the woman of this household earn
   income              ;income of this household
+  friends
 ]
 
 
 to setup
   clear-all
-  random-seed seed
+  if use-random-seed? [random-seed seed]
   set-initial-values
   set lockdown? false
   set-default-shape turtles "circle"
-  create-turtles number-of-nodes [setup-nodes]
-  ; setup systemic nodes
-  ask n-of (number-of-systemic * count turtles / 100 ) turtles
+
+   ;create and link women with other women, men with other men
+  if network-structure = "random"
   [
-    set systemic? true
+    nw:generate-random men links number-of-households random-network-prob
+    nw:generate-random women links number-of-households random-network-prob
   ]
-  ask n-of (15 * count turtles / 100 ) turtles with [not systemic?]       ;15% of households: the woman is at home and the man works outside the home
+  if network-structure = "small world"
   [
-    set rev-systemic? true
+    nw:generate-watts-strogatz men links number-of-households watts-strogatz-neighbors watts-strogatz-rewiring
+    nw:generate-watts-strogatz women links number-of-households watts-strogatz-neighbors watts-strogatz-rewiring
   ]
+  if network-structure = "preferential-attachment"
+  [
+    nw:generate-preferential-attachment men links number-of-households preferential-attachment-min-degree
+    nw:generate-preferential-attachment women links number-of-households preferential-attachment-min-degree
+  ]
+
+  layout-circle men 15
+  layout-circle women 15
+
+   ;link spouses
+    ask women
+    [
+      setup-women
+      set spouse one-of men with [spouse = 0]
+      ask spouse
+      [
+        set spouse myself
+        setup-men
+      ]
+    ]
+  ask turtles [
+    set household-care care + [care] of spouse
+    set lockdown-household-care household-care + add-care
+    set lockdown-hours hours
+  ]
+ set jobs 0
+
   ask n-of (fix * count turtles / 100 ) turtles
   [
     set fix? true
   ]
-    set num-links (average-node-degree * number-of-nodes) / 2
-   ;chose network type
-  if network-type = "spatially clustered" [setup-spatially-clustered-network]
-  if network-type = "random" [setup-random-network]
-  if network-type = "small world" [setup-small-world-network]
-  if network-type = "preferential attachment" [setup-preferential-attachment-network]
-  set c a
-  set d b
+
+  if equal-conv-param? [
+    set b a
+    set c a
+    set d a
+  ]
+
   reset-ticks
+
   if output-agents = true
   [
     file-close-all
@@ -81,131 +116,98 @@ to setup
   ]
 end
 
-to set-initial-values
-  set-general-parameters
-  (ifelse initial-values = "de" [
-    set unemployed-f 5.2
-    set unemployed-m 4.7
-    set mean-work-f 4.43
-    set mean-work-m 5.58
-    set mean-care-f 3.8
-    set mean-care-m 2.4
-    ]
-    initial-values = "us" [
-     set unemployed-f 3.8
-     set unemployed-m 3.7
-     set mean-work-f 7.8
-     set mean-work-m 8.65
-     set mean-care-f 1.21
-     set mean-care-m 2.4
-    ]
-  )
+to setup-women
+  set shape "triangle"
+  set xcor xcor - 15
+  set-confidence-bounds
+
+  ;gender identity
+  set gender-identity in-bounds(random-normal initial-identity 0.2)
+  set identity-history n-values history-length-norm [gender-identity]
+
+  set income 1 ;max list 0 random-normal mean-paygap 0.2                      ;income trotz unemployed?????????
+
+  ;work
+  set work in-work(random-normal mean-work-f 5)
+  set unemployed? false
+  if (random-float 100 < unemployed-f) [
+    set unemployed? true
+    set work 0
+  ]
+  set work-history n-values history-length-work [work]
+
+  ;care
+  set care in-hours(random-normal (mean-care-f) 5)
+  set care-history n-values history-length-care [care]
+
 end
 
-to set-general-parameters
-  set history-length-norm 5
+to setup-men
+  set shape "square"
+  set xcor xcor + 15
+  set-confidence-bounds
+
+  ; gender identity
+   set gender-identity in-bounds(random-normal initial-identity 0.2)
+  set identity-history n-values history-length-norm [gender-identity]
+;  set gender-identity [gender-identity] of spouse
+;  set identity-history n-values history-length-norm [gender-identity]
+
+  set income 1
+
+  ;work
+  set work in-work(random-normal mean-work-m 5)
+  set unemployed? false
+  if (random-float 100 < unemployed-m) [
+    set unemployed? true
+    set work 0
+  ]
+  set work-history n-values history-length-work [work]
+
+  ;care
+  set care in-hours(random-normal (mean-care-m) 5)
+  set care-history n-values history-length-care [care]
+
+end
+
+to set-initial-values
+  set random-network-prob 0.02
+  set watts-strogatz-neighbors 2
+  set watts-strogatz-rewiring 0.04
+  set preferential-attachment-min-degree 2
+
+  (ifelse initial-values = "de" [
+    set mean-care-f 3.8 * 7
+    set mean-care-m 2.4 * 7
+    set mean-work-f 4.43 * 7
+    set mean-work-m 5.58 * 7
+    set unemployed-f 5.2
+    set unemployed-m 4.7
+    ]
+    initial-values = "us" [
+      set mean-care-f 1.21 * 7
+    set mean-care-m 2.4 * 7
+    set mean-work-f 7.8 * 7
+    set mean-work-m 8.65 * 7
+      set unemployed-f 3.8
+      set unemployed-m 3.7
+    ]
+    initial-values = "equal" [
+    set mean-care-f 3 * 7
+    set mean-care-m 3 * 7
+    set mean-work-f 5 * 7
+    set mean-work-m 5 * 7
+    set unemployed-f 4.5
+    set unemployed-m 4.5
+    set mean-paygap 1
+    ]
+  )
+  set history-length-norm 1
   set history-length-care 3
   set history-length-work 3
   set th-work-change 0.2
 end
 
-to setup-nodes
-  setxy random-xcor random-ycor
-  set lockdown-hours hours + add-care
-  set gender-identity in-bounds(random-normal initial-identity 0.2)
-  set paygap random-normal min list 0 mean-paygap 0.2
-  set unemployed-f-m? list false false
-  if (random-float 100 < unemployed-m) [set unemployed-f-m? replace-item 1 unemployed-f-m? true] ;US 3.7 D: 5.2
-  if (random-float 100 < unemployed-f) [set unemployed-f-m? replace-item 0 unemployed-f-m? true] ;US 3.8 D: 4.7
-  set identity-history n-values history-length-norm [gender-identity]  ; correct values, dist, deviance,.....
-  set work-f-m [0 0]
-  let work-f in-work(random-normal mean-work-f 5)    ;wegen random-seed!!!! ;US: 7.8 D: 4.43 (only employed noch suchen!)
-  if (not item 0 unemployed-f-m?) [set work-f-m list work-f 0]  ; average working hours employed women 7.8/day  ;what distribution/ deviation,...... ?
-  let work-m in-work(random-normal mean-work-m 5) ; US: 6.2 D: 5.58
-  if (not item 1 unemployed-f-m?) [set work-f-m replace-item 1 work-f-m work-m]          ; average working hours employed men 8.65/day
-  set work-history matrix:from-row-list (n-values history-length-work [work-f-m])
-  set income ((item 1 work-f-m) + (item 0 work-f-m) * paygap)
-  set care-f-m list in-hours(random-normal (mean-care-f) 5) in-hours(random-normal (mean-care-m) 5) ;distribution, deviation...? ;f 8.45/Woche? m 6.97/Woche US: 1.2/1 D:3.8/2.4
-  set care-history matrix:from-row-list (n-values history-length-care [care-f-m])
-  set lockdown-work-f-m [ 0 0 ]
-  set household-care sum care-f-m  ;distribution, deviation, average.......
-  if (household-care < 0) [set household-care 0]
-  set lockdown-household-care household-care + max list 0 (min list (random-normal add-care 2) lockdown-hours)  ;(*2 weil per person????)
-  set color scale-color red gender-identity 0 1
-  set systemic? false
-  set rev-systemic? false
-  set fix? false
-  set n 0.5
-  if (sum care-f-m > 0) [set n (item 0 care-f-m / sum care-f-m)]
-end
-
-
-to setup-random-network
-  while [count links < num-links]
-  [
-    ask one-of turtles [create-link-with one-of other turtles]
-  ]
-  repeat 10
-  [
-    layout-spring turtles links 0.1 (world-width / (sqrt number-of-nodes)) 2
-  ]
-end
-
-
-to setup-preferential-attachment-network
-  ask one-of turtles [create-link-with one-of other turtles]
-  while [count links < num-links] [
-    ask one-of links [ask one-of both-ends [create-link-with one-of other turtles with [not link-neighbor? myself]]]
-  ]
-  repeat 10
-  [
-    layout-spring turtles links 0.1 (world-width / (sqrt number-of-nodes)) 1
-  ]
-end
-
-to setup-small-world-network                             ; sets up a Watts-Strogatz-network
-  layout-circle (sort turtles) (world-width / 2) * 0.8
-  let neighbor-degree 1
-  while [count links < num-links ] [
-    let x 0
-    while [ x < count turtles and count links < num-links] [
-      ; make edges with the next two neighbors
-      ask (turtle x) [create-link-with turtle ((x + neighbor-degree) mod count turtles)]
-      set x x + 1
-    ]
-    set neighbor-degree neighbor-degree + 1
-  ]
-  ;; rewiring links
-  ask links [
-    if (random 100 < 0.2 * 100) [             ;rewiring probability 0.2
-      ask one-of both-ends [create-link-with one-of other turtles with [not link-neighbor? myself]]
-      die
-    ]
-  ]
-;  repeat 10
-;  [
-;    layout-spring turtles links 0.1 (world-width / (sqrt number-of-nodes)) 1
-;  ]
-end
-
-
-to setup-spatially-clustered-network                         ; links randomly chosen node with nearest node wich is not link neighbor
-  create-turtles number-of-nodes [setup-nodes]
-  while [count links < num-links ]
-  [
-    ask one-of turtles
-    [
-      let choice (min-one-of (other turtles with [not link-neighbor? myself])
-                   [distance myself])
-      if choice != nobody [ create-link-with choice ]
-    ]
-  ]
-  ; make the network look a little prettier
-  repeat 10
-  [
-    layout-spring turtles links 0.3 (world-width / (sqrt number-of-nodes)) 1
-  ]
-end
 
 to go
   if (ticks >= ld-start and ticks <= ld-end)
@@ -214,16 +216,16 @@ to go
   [start-lockdown]
   if (ticks = ld-end)
   [set lockdown? false]
+
   ask turtles
   [
-    set-confidence-bounds
     update-norm-new
     set-care-new
-    update-work-friends-new
     update-work-new
-    ;lose-job
+    update-work-friends-new
+    update-colors
   ]
-  ;update-paygap
+
   if output-agents = true
   [
     print_agents
@@ -231,6 +233,10 @@ to go
   tick
 end
 
+to-report difference   ;squared differences -> least squares problem  --> normieren auf 1 (sonst wirken parameter mit größerem wertebereich stärker)
+  report mean (list (mean [work] of women - mean-work-f)(mean [care] of women - mean-care-f)(mean [work] of men - mean-work-m)(mean [care] of men - mean-care-m))
+
+end
 
 to set-confidence-bounds
     let x random-gamma 2.6 1
@@ -240,128 +246,154 @@ end
 
 
 to start-lockdown
-  ask turtles with [systemic? = false and rev-systemic? = false]
-    [set lockdown-work-f-m list (item 0 work-f-m * (random-float lockdown-percent-f)) (item 1 work-f-m * random-float lockdown-percent-m)]
-  ask turtles with [systemic? = true]
-    [
-      set lockdown-work-f-m list item 0 work-f-m  0
-    ]
-  ask turtles with [rev-systemic? = true]
-    [
-      set lockdown-work-f-m list 0 item 1 work-f-m
-    ]
+  ask n-of (count women * 0.15) women
+    [set jobs jobs - work
+     set work 0
+  ]
+  ask n-of (count men * (percent-men-home / 100)) men [
+    set jobs jobs - work
+    set work 0
+  ]
 end
 
 to update-work-new
+  let old-work mean work-history
   set work-div 0.5
-  set income ((item 1 work-f-m) + (item 0 work-f-m) * paygap )
-  if (not (sum work-f-m = 0)) [set work-div (item 1 work-f-m / sum work-f-m)] ;1 -> man single earner, 0 -> woman single earner
-  if (abs(work-div - mean identity-history) > th-work-change)[
-    let potential-m 0
-    let potential-f 0
-    ifelse(lockdown?)
-      [
-        set potential-f in-work(lockdown-hours - (lockdown-household-care - mean (matrix:get-column care-history 1)))
-        set potential-m in-work(lockdown-hours - (lockdown-household-care - mean (matrix:get-column care-history 0)))
-      ][
-        set potential-f in-work(hours - (household-care - mean (matrix:get-column care-history 1)))
-        set potential-m in-work(hours - (household-care - mean (matrix:get-column care-history 0)))
-      ]
-    let potential-income  ((potential-m)  + (potential-f) * paygap )         ;what the household may earn if they choose the new division
-    let potential-div 0.5
-    if (potential-f + potential-m > 0) [set potential-div (potential-m / (potential-f + potential-m))]
-    if(abs(potential-div - mean identity-history) < abs(work-div - mean identity-history) and potential-income >= income * 0.9)
-        [; if((hours * 2 - sum work-f-m - household-care) >= 0)[         ;household care needs to be done
-          set work-f-m list in-work(mean list matrix:get-column work-history 0 potential-f) in-work(mean list matrix:get-column work-history 1 potential-m)
-      ;   ]
-        ]
-   ]
-  ;if(random-float 1 < 0.05) [set work-f-m list in-work(random-normal 2.19 2) 0]  ; average working hours employed women 7.8/day  ;what distribution/ deviation,...... ?
-  ;if (random-float 1 < 0.05) [set work-f-m replace-item 1 work-f-m in-work(random-normal 6.02 1)]
-  set work-history matrix:copy (matrix:submatrix work-history 1 0 history-length-work 2) ;add new row at the last position of matrix without the first row
-  set work-history matrix:from-row-list (lput work-f-m (matrix:to-row-list work-history))
+  let potential work
+  let hh-work work + [work] of spouse
+  let ideal-work ifelse-value (breed = women) [hh-work * ( 1 - gender-identity)][hh-work * gender-identity]
+  let n-work ideal-work
+   ifelse (count friends > 0)
+      [ set n-work (mean [work] of friends) ]
+      [ set n-work old-work ]
+  set hh-income (income * work) + ([income * work] of spouse)
+  if (hh-work > 0) [set work-div ifelse-value (breed = women) [[work] of spouse / hh-work][ work / hh-work]] ;1 -> man single earner, 0 -> woman single earner
+  ifelse(lockdown?)
+    [
+      set potential in-work(lockdown-hours - (lockdown-household-care - mean [care-history] of spouse))
+    ][
+      set potential in-work(hours - (household-care - mean [care-history] of spouse))
+    ]
+  set potential in-hours( potential - a * (potential - n-work) - b * (potential - ideal-work) )
+  let potential-income  ((potential * income)  + [work * income] of spouse)         ;what the household may earn if they choose the new division
+  let potential-div 0.5
+  if (potential + [work] of spouse > 0) [set potential-div ifelse-value (breed = women) [ [work] of spouse / ([work] of spouse + potential) ][potential / (potential + [work] of spouse) ]]
+  ;; check deviation of potential work division from gender idenity and prevent income loss:
+  if(abs(potential-div - mean identity-history) < abs(work-div - mean identity-history) and potential-income >= income * 0.9 )[
+   set work available-jobs potential work
+    ]
+  set work-history lput work butfirst work-history
 end
 
 
 to update-work-friends-new
    ;;; someone from social group has higher income
-  if(not (friends = 0))[
-    let friend one-of friends with [income >= 1.3 * [income] of myself]
-    if (friend != NOBODY)[
-      let work-f 0
-      let work-m 0
-      ifelse (paygap < 1)[ ; paygap < 1 --> man earns more in this household
-        ifelse(lockdown?)
-           [set work-m in-work(max list (lockdown-hours - (lockdown-household-care - mean (matrix:get-column care-history 0))) (mean matrix:get-column work-history 1 * 1.2))]
-           [set work-m in-work(max list (hours - (household-care - mean (matrix:get-column care-history 0))) (mean matrix:get-column work-history 0 * 1.2))]
-      ][ ; paygap > 1 --> woman earns more
-       ifelse(lockdown?)
-        [set work-f in-work(max list (lockdown-hours - (lockdown-household-care - mean (matrix:get-column care-history 1))) (mean matrix:get-column work-history 0 * 1.2))]
-        [set work-f in-work(max list (hours - (household-care - mean (matrix:get-column care-history 1))) (mean matrix:get-column work-history 0 * 1.2))]
+  if(count friends > 0)[
+    let n-income mean  [hh-income] of friends
+    let potential work
+    if (n-income > 1.2 * hh-income) [
+      if (income > [income] of spouse)[
+         ifelse(lockdown?)
+         [
+           set potential in-work(work + random-float (lockdown-hours - (lockdown-household-care - mean [care-history] of spouse) - work))
+         ][
+           set potential in-work(work + random-float (hours - (household-care - mean [care-history] of spouse) - work))
+         ]
+             set work available-jobs potential work
       ]
-      set work-f-m list mean (list matrix:get-column work-history 0 work-f) mean (list matrix:get-column work-history 1 work-m)
+;        [
+;        ask spouse [
+;          let potential in-work(work + random-float (hours - care))
+;          set work available-jobs potential work
+;        ]
+;      ]
     ]
   ]
 end
 
-to lose-job
-  if (item 0 work-f-m > 0 and random-float 100 < unemployed-f) [
-      set work-f-m replace-item 0 work-f-m 0
-    ]
-  if (item 1 work-f-m > 0 and random-float 100 < unemployed-m) [
-      set work-f-m replace-item 1 work-f-m 0
-    ]
+to-report available-jobs [potential current-work]
+   let diff current-work - potential  ; (negativ wenn studen erhöht, also von jobs  abziehen; positiv wenn stunden frei werden also zu jobs dazu zählen)
+      ifelse(diff >= 0)
+      [ ;; stunden reduziert; neue jobs frei
+        set jobs jobs + diff
+        report potential
+      ]
+      [ ;; diff < 0 --> stunden erhöht, weniger freie jobs
+        ifelse (jobs > (- diff))
+        [ ;; es gibt genug jobs
+          set jobs jobs + diff
+          report potential
+        ] ;; es sind nicht genug jobs
+        [let remaining jobs
+         set jobs 0
+         report current-work + remaining
+         ]
+      ]
 end
 
 to update-norm-new
-  if (not fix?)[
-    set friends link-neighbors with [(abs (gender-identity - [gender-identity] of myself) < eps)]  ; confidence bound
-    let cogn-diss gender-identity - 0.5  ;if no care work needs to be done
-    ;let work-ratio 0.5
-    if (sum care-f-m > 0)[
-      ifelse(sum work-f-m > 0)
-      [set cogn-diss gender-identity - mean list (item 0 care-f-m / sum care-f-m)(item 1 work-f-m / sum work-f-m)]
-      [set cogn-diss gender-identity - mean list (item 0 care-f-m / sum care-f-m)(0.5)]      ;both do not work: share work hours equally
+   let old-gender-identity mean identity-history
+   set friends link-neighbors with [(abs (gender-identity - [gender-identity] of myself) < eps)]  ; confidence bound
+   let cogn-diss 0
+   let household-work work + [work] of spouse
+   if breed = women [
+    ifelse (household-care > 0)[
+      ifelse(household-work > 0)
+      [set cogn-diss old-gender-identity - mean list (care / household-care)([work] of spouse / household-work)]
+      [set cogn-diss old-gender-identity - mean list (care / household-care)(0.5)]      ;both do not work: share work hours equally
+    ][
+      ifelse(household-work > 0)
+      [set cogn-diss old-gender-identity - mean list 0.5 ([work] of spouse / household-work)]
+      [set cogn-diss old-gender-identity - 0.5]
     ]
     ifelse (count friends > 0)
-    [ ifelse(sum [work-f-m] of friends > 0)
-      [set n (mean list (mean [item 0 care-f-m / sum care-f-m] of friends)(mean [item 1 work-f-m] of friends / sum [work-f-m] of friends))]
-      [set n (mean list (mean [item 0 care-f-m / sum care-f-m] of friends) 0.5)]
-      set gender-identity in-bounds( gender-identity - a * (gender-identity - n) - b * cogn-diss)
+      [ set n (mean [gender-identity] of friends) ]
+      [ set n old-gender-identity ]
+      set old-gender-identity in-bounds( old-gender-identity - a * (old-gender-identity - n) - b * cogn-diss)
                                                            ; social control                   ; cognitive dissonance
+      set gender-identity mean list mean identity-history old-gender-identity
+   set identity-history lput old-gender-identity butfirst identity-history
+  ]
+   ;ask spouse [set gender-identity [gender-identity] of myself]
+  if breed = men [
+    ifelse (household-care > 0)[
+      ifelse(household-work > 0)
+      [set cogn-diss old-gender-identity - mean list ([care] of spouse / household-care)(work / household-work)]
+      [set cogn-diss old-gender-identity - mean list ([care] of spouse / household-care)(0.5)]      ;both do not work: share work hours equally
+    ][
+      ifelse(household-work > 0)
+      [set cogn-diss old-gender-identity - mean list 0.5 (work / household-work)]
+      [set cogn-diss old-gender-identity - 0.5]
     ]
-    [
-      set gender-identity  in-bounds (gender-identity - b * cogn-diss)
-                                                            ; cognitive dissonance
-    ]
-    set gender-identity in-bounds(mean list gender-identity mean identity-history)
-    set identity-history lput gender-identity butfirst identity-history
-    ]
-  set color scale-color red gender-identity 0 1
+    ifelse (count friends > 0)
+      [ set n (mean [gender-identity] of friends) ]
+      [ set n old-gender-identity ]
+      set old-gender-identity in-bounds( old-gender-identity - a * (old-gender-identity - n) - b * cogn-diss)
+                                                           ; social control                   ; cognitive dissonance
+      set gender-identity mean list mean identity-history old-gender-identity
+   set identity-history lput old-gender-identity butfirst identity-history
+  ]
 end
 
 to set-care-new
-  let ratio 0.5
-  let x list 0 0
-  let ideal-f-m list 0 0
-  let pot-f-m list 0 0
-  ifelse(lockdown?)
-  [
-    if (not (sum lockdown-work-f-m = 0))[set ratio (item 0 lockdown-work-f-m) / (sum lockdown-work-f-m)]  ;division of care work following the working hour division
-    set pot-f-m list (lockdown-household-care * (1 - ratio))(lockdown-household-care * ratio) ;(lockdown-hours - item 0 lockdown-work-f-m)(lockdown-hours - item 1 lockdown-work-f-m)       ;division of care work following the working hours division
-    set ideal-f-m list (lockdown-household-care * gender-identity)(lockdown-household-care * (1 - gender-identity)) ;care division according to gender identity
+  set care mean care-history
+  let ideal hours
+  ifelse lockdown? [
+    set ideal ifelse-value (breed = women) [(lockdown-household-care * gender-identity)][(lockdown-household-care * (1 - gender-identity))] ;care division according to gender identity
+  ][
+    set ideal ifelse-value (breed = women) [(household-care * gender-identity)][(household-care * (1 - gender-identity))]
   ]
-  [
-    if (not (sum work-f-m = 0))[set ratio (item 0 work-f-m) / (sum work-f-m)]
-    set pot-f-m list (household-care * (1 - ratio))(household-care * ratio)   ;list (hours - item 0 work-f-m)(hours - item 1 work-f-m)
-    set ideal-f-m list (household-care * gender-identity)(household-care * (1 - gender-identity)) ;care division according to gender identity
+  set n ideal
+  if count friends > 0 [
+    set n (mean [care] of friends)
   ]
-  ;let hist list mean matrix:get-column care-history 0 mean matrix:get-column care-history 1
-  let care-m max list 0 (item 1 pot-f-m - c * (item 1 pot-f-m - (1 - n) * household-care) - d * (item 1 pot-f-m - item 1 ideal-f-m))
-  let care-f max list 0 (item 0 pot-f-m - c * (item 0 pot-f-m - n * household-care) - d * (item 0 pot-f-m - item 0 ideal-f-m))
-  set care-f-m list (mean list mean (matrix:get-column care-history 0) care-f)(mean list mean (matrix:get-column care-history 1) care-m)
-  set care-history matrix:copy (matrix:submatrix care-history 1 0 history-length-care 2) ;add new row at the last position of matrix without the first row
-  set care-history matrix:from-row-list (lput care-f-m (matrix:to-row-list care-history))
+  set care in-hours( care - a * (care - n) - b * (care - ideal) )
+  set care-history lput care butfirst care-history
+end
+
+to update-colors
+  set color scale-color red gender-identity 0 1
+  if (work < 0.5 and [work] of spouse > 1) [set color yellow]
 end
 
 to-report in-hours [x]
@@ -389,7 +421,8 @@ to-report in-work [x]
     [report x]
     [report max-work]
   ]
-  [report 0]
+  [ set unemployed? true
+    report 0]
 end
 
 to-report in-bounds [x]
@@ -404,18 +437,18 @@ end
 to print_agents
   ask turtles
   [
-    file-print (word who "," initial-identity "," item 0 care-f-m "," item 1 care-f-m "," item 0 work-f-m "," item 1 work-f-m "," gender-identity "," ticks ",")
+    file-print (word who "," breed "," initial-identity "," care " ,"work "," gender-identity "," ticks ",")
   ]
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
-995
+1021
 10
-1432
-448
+1798
+410
 -1
 -1
-13.0
+12.613
 1
 10
 1
@@ -425,10 +458,10 @@ GRAPHICS-WINDOW
 0
 0
 1
--16
-16
--16
-16
+-30
+30
+-15
+15
 0
 0
 1
@@ -455,28 +488,13 @@ NIL
 SLIDER
 46
 84
-218
+227
 117
-number-of-nodes
-number-of-nodes
-0
+number-of-households
+number-of-households
+1
 1000
-500.0
-1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-47
-122
-219
-155
-average-node-degree
-average-node-degree
-0
-number-of-nodes - 1
-13.0
+440.0
 1
 1
 NIL
@@ -498,7 +516,9 @@ true
 true
 "set-histogram-num-bars 100" "set-histogram-num-bars 100"
 PENS
-"n" 0.01 1 -16777216 true "" "histogram [gender-identity] of turtles"
+"n-f" 0.01 1 -16777216 true "" "histogram [gender-identity] of women"
+"n-m" 0.01 1 -1184463 true "" "histogram [gender-identity] of men"
+"div" 0.01 1 -7500403 true "" "histogram [care / household-care ] of women"
 
 BUTTON
 130
@@ -534,10 +554,10 @@ true
 "" ""
 PENS
 "gender identity" 1.0 0 -2674135 true "" "plot mean ([gender-identity] of turtles)"
-"care f" 1.0 0 -16050907 true "" "plot mean([item 0 care-f-m] of turtles)"
-"work f" 1.0 0 -10899396 true "" "plot mean([item 0 work-f-m] of turtles)"
-"care m" 1.0 0 -1184463 true "" "plot mean([item 1 care-f-m] of turtles)"
-"work m" 1.0 0 -5825686 true "" "plot mean ([item 1 work-f-m] of turtles)"
+"care f" 1.0 0 -16050907 true "" "plot mean([care] of women)"
+"work f" 1.0 0 -10899396 true "" "plot mean([work] of women)"
+"care m" 1.0 0 -1184463 true "" "plot mean([care] of men)"
+"work m" 1.0 0 -5825686 true "" "plot mean ([work] of men)"
 
 SWITCH
 244
@@ -558,16 +578,16 @@ PLOT
 care work
 NIL
 NIL
-0.0
-45.0
+-10.0
+50.0
 0.0
 15.0
-false
+true
 true
 "set-histogram-num-bars 100" ""
 PENS
-"care f" 0.1 1 -16777216 true "" "histogram [item 0 care-f-m] of turtles"
-"care m" 0.1 1 -1184463 true "" "histogram [item 1 care-f-m] of turtles"
+"care f" 0.1 1 -16777216 true "" "histogram [care] of women"
+"care m" 0.1 1 -1184463 true "" "histogram [care] of men"
 
 SLIDER
 11
@@ -578,7 +598,7 @@ a
 a
 0
 0.5
-0.3
+0.25
 0.01
 1
 NIL
@@ -593,7 +613,7 @@ b
 b
 0
 0.7
-0.3
+0.25
 0.01
 1
 NIL
@@ -608,7 +628,7 @@ c
 c
 0
 0.5
-0.3
+0.25
 0.01
 1
 NIL
@@ -623,7 +643,7 @@ d
 d
 0
 0.7
-0.3
+0.25
 0.01
 1
 NIL
@@ -670,15 +690,15 @@ adapt care distribution -> n
 1
 
 SLIDER
-365
-62
-509
-95
-number-of-systemic
-number-of-systemic
+344
+167
+516
+200
+percent-men-home
+percent-men-home
 0
 100
-15.0
+0.0
 1
 1
 %
@@ -700,8 +720,8 @@ true
 true
 "set-histogram-num-bars 100" ""
 PENS
-"work-f" 0.1 1 -16777216 true "" "histogram [item 0 work-f-m] of turtles"
-"work-m" 0.1 1 -1184463 true "" "histogram [item 1 work-f-m] of turtles"
+"work-f" 0.1 1 -16777216 true "" "histogram [work] of women"
+"work-m" 0.1 1 -1184463 true "" "histogram [work] of men"
 
 PLOT
 862
@@ -719,15 +739,15 @@ true
 true
 "" ""
 PENS
-"gender-identity" 1.0 0 -2674135 true "" "plot mean  [gender-identity] of turtles"
-"work-division (only employed)" 1.0 0 -14439633 true "" "plot mean [item 1 work-f-m / sum work-f-m] of turtles with [sum work-f-m > 0]"
-"care-division" 1.0 0 -14070903 true "" "plot mean [item 0 care-f-m / sum care-f-m] of turtles"
+"gender-identity" 1.0 0 -2674135 true "" "plot mean  [gender-identity] of women"
+"work-division (only employed)" 1.0 0 -14439633 true "" "plot mean [work / ( work + [work] of spouse )] of men with [not unemployed?]"
+"care-division" 1.0 0 -14070903 true "" "plot mean [care / (care + [care] of spouse )] of women\n"
 
 OUTPUT
-1445
-464
-1698
-579
+1293
+572
+1710
+721
 11
 
 CHOOSER
@@ -735,27 +755,27 @@ CHOOSER
 14
 390
 59
-network-type
-network-type
-"random" "spatially clustered" "preferential attachment" "small world"
+network-structure
+network-structure
+"random" "preferential attachment" "small world"
 0
 
 MONITOR
 759
 330
-964
+977
 375
 NIL
-count turtles with [item 0 work-f-m = 0]
+mean [work] of men
 17
 1
 11
 
 PLOT
-1665
-10
-1865
-160
+1644
+562
+1809
+686
 average income per household
 NIL
 NIL
@@ -767,7 +787,7 @@ true
 false
 "" ""
 PENS
-"average income" 1.0 0 -16777216 true "" "plot mean [income] of turtles"
+"average income" 1.0 0 -16777216 true "" "plot mean [income * work] of turtles"
 
 SLIDER
 8
@@ -778,29 +798,29 @@ initial-identity
 initial-identity
 0
 1
-0.7
+0.5
 0.05
 1
 NIL
 HORIZONTAL
 
 PLOT
-1447
-10
-1647
-160
+1645
+431
+1805
+551
 care total
 NIL
 NIL
 0.0
-100.0
+10.0
 0.0
 10.0
 true
 false
 "" ""
 PENS
-"default" 1.0 0 -16777216 true "" "plot sum [sum care-f-m] of turtles"
+"default" 1.0 0 -16777216 true "" "plot sum [care] of turtles"
 
 SLIDER
 43
@@ -811,40 +831,10 @@ fix
 fix
 0
 100
-10.0
+0.0
 1
 1
 %
-HORIZONTAL
-
-SLIDER
-40
-502
-212
-535
-lockdown-percent-f
-lockdown-percent-f
-0
-1
-0.8
-0.1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-40
-540
-212
-573
-lockdown-percent-m
-lockdown-percent-m
-0
-1
-0.8
-0.1
-1
-NIL
 HORIZONTAL
 
 SLIDER
@@ -856,7 +846,7 @@ hours
 hours
 0
 100
-63.0
+69.0
 0.5
 1
 NIL
@@ -868,7 +858,7 @@ INPUTBOX
 413
 313
 ld-start
-100.0
+500.0
 1
 0
 Number
@@ -879,7 +869,7 @@ INPUTBOX
 488
 313
 ld-end
-125.0
+700.0
 1
 0
 Number
@@ -892,8 +882,8 @@ SLIDER
 add-care
 add-care
 0
-1030
-20.0
+30
+13.6
 0.1
 1
 NIL
@@ -908,7 +898,7 @@ max-work
 max-work
 0
 50
-40.0
+45.0
 0.1
 1
 NIL
@@ -923,7 +913,7 @@ seed
 seed
 0
 100
-50.0
+200.0
 1
 1
 NIL
@@ -938,7 +928,7 @@ mean-paygap
 mean-paygap
 0
 1
-0.83
+1.0
 0.01
 1
 NIL
@@ -956,10 +946,10 @@ output-agents
 -1000
 
 BUTTON
-9
-581
-149
-614
+44
+125
+184
+158
 NIL
 set-initial-values
 NIL
@@ -973,14 +963,105 @@ NIL
 1
 
 CHOOSER
-223
-583
-361
-628
+196
+125
+334
+170
 initial-values
 initial-values
-"de" "us"
+"de" "us" "equal"
+2
+
+PLOT
+524
+369
+724
+519
+intra-household paygap
+NIL
+NIL
+-0.5
+1.5
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 0.1 1 -16777216 true "" "histogram [income] of women"
+
+PLOT
+759
+382
+959
+532
+Jobs
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot jobs + sum [work] of turtles"
+
+MONITOR
+1009
+434
+1351
+479
+NIL
+count women with [work < 0.5 and [work] of spouse > 0.5]
+17
 1
+11
+
+MONITOR
+1010
+488
+1336
+533
+NIL
+count men with [work < 0.5 and [work] of spouse > 0.5]
+17
+1
+11
+
+SWITCH
+363
+62
+511
+95
+use-random-seed?
+use-random-seed?
+0
+1
+-1000
+
+SWITCH
+363
+104
+512
+137
+equal-conv-param?
+equal-conv-param?
+0
+1
+-1000
+
+MONITOR
+788
+378
+939
+423
+NIL
+mean [work] of women
+17
+1
+11
 
 @#$#@#$#@
 ## WHAT IS IT?
@@ -1756,6 +1837,135 @@ need-to-manually-make-preview-for-this-model
     </enumeratedValueSet>
     <enumeratedValueSet variable="hours">
       <value value="63"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="experiment-where are the results" repetitions="1" runMetricsEveryStep="false">
+    <setup>setup</setup>
+    <go>go</go>
+    <timeLimit steps="499"/>
+    <metric>difference</metric>
+    <metric>mean [care] of women</metric>
+    <metric>mean [care] of men</metric>
+    <metric>mean [work] of women</metric>
+    <metric>mean [work] of men</metric>
+    <enumeratedValueSet variable="ld-start">
+      <value value="500"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="initial-identity">
+      <value value="0.8"/>
+    </enumeratedValueSet>
+    <steppedValueSet variable="max-work" first="30" step="1" last="45"/>
+    <steppedValueSet variable="seed" first="1" step="1" last="10"/>
+    <enumeratedValueSet variable="initial-values">
+      <value value="&quot;us&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="a">
+      <value value="0.07"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mean-paygap">
+      <value value="0.83"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="b">
+      <value value="0.12"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="output-agents">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="c">
+      <value value="0.09"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="ld-end">
+      <value value="700"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="d">
+      <value value="0.28"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="lockdown?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="network-structure">
+      <value value="&quot;random&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="number-of-households">
+      <value value="200"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fix">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="add-care">
+      <value value="13.6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-men-home">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <steppedValueSet variable="hours" first="30" step="5" last="70"/>
+  </experiment>
+  <experiment name="experiment-equal-ic" repetitions="1" runMetricsEveryStep="false">
+    <setup>setup</setup>
+    <go>go</go>
+    <timeLimit steps="400"/>
+    <metric>mean [care] of women</metric>
+    <metric>mean [care] of men</metric>
+    <metric>mean [work] of women</metric>
+    <metric>mean [work] of men</metric>
+    <enumeratedValueSet variable="ld-start">
+      <value value="500"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="initial-identity">
+      <value value="0.5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-work">
+      <value value="45"/>
+    </enumeratedValueSet>
+    <steppedValueSet variable="seed" first="100" step="1" last="200"/>
+    <enumeratedValueSet variable="initial-values">
+      <value value="&quot;equal&quot;"/>
+    </enumeratedValueSet>
+    <steppedValueSet variable="a" first="0.05" step="0.05" last="0.4"/>
+    <enumeratedValueSet variable="use-random-seed?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mean-paygap">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="b">
+      <value value="0.35"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="output-agents">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="c">
+      <value value="0.18"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="ld-end">
+      <value value="700"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="d">
+      <value value="0.37"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="lockdown?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="network-structure">
+      <value value="&quot;random&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="number-of-households">
+      <value value="1000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fix">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="add-care">
+      <value value="13.6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-men-home">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="hours">
+      <value value="69"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="equal-conv-param?">
+      <value value="true"/>
     </enumeratedValueSet>
   </experiment>
 </experiments>
